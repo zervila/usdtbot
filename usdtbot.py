@@ -1,18 +1,14 @@
 import logging
 import os
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler, \
-    MessageHandler as MessageHandlerConv
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 import requests
-
-# Состояния для ConversationHandler
-CONVERT_AMOUNT = range(1)
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Отключаем логи httpx и telegram для безопасности токена
+# КРИТИЧЕСКИ ВАЖНО: Отключаем логи httpx и telegram чтобы не светить токен бота в логах
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
 
@@ -50,28 +46,20 @@ def get_crypto_rate(crypto_symbol):
             
     except (requests.exceptions.RequestException, KeyError, ValueError) as e:
         logger.error(f"CoinGecko API error for {crypto_symbol}: {e}")
-        # Универсальный fallback через USD для всех валют
-        try:
-            url_usd = f"https://api.coingecko.com/api/v3/simple/price?ids={crypto_id}&vs_currencies=usd"
-            response_usd = requests.get(url_usd, timeout=10)
-            response_usd.raise_for_status()
-            data_usd = response_usd.json()
-            if crypto_id in data_usd and 'usd' in data_usd[crypto_id]:
-                usd_rate = float(data_usd[crypto_id]['usd'])
-                url_kzt = "https://api.exchangerate-api.com/v4/latest/USD"
-                response_kzt = requests.get(url_kzt, timeout=5)
-                response_kzt.raise_for_status()
-                data_kzt = response_kzt.json()
-                if 'rates' in data_kzt and 'KZT' in data_kzt['rates']:
-                    kzt_rate = float(data_kzt['rates']['KZT'])
-                    return usd_rate * kzt_rate
-                else:
-                    raise KeyError("KZT rate not found in fallback API")
-            else:
-                raise KeyError(f"USD rate not found for {crypto_symbol}")
-        except (requests.exceptions.RequestException, KeyError, ValueError) as fallback_e:
-            logger.error(f"Fallback API error for {crypto_symbol}: {fallback_e}")
-            return None
+        # Fallback для USDT через USD
+        if crypto_symbol == 'USDT':
+            try:
+                url_fallback = "https://api.exchangerate-api.com/v4/latest/USD"
+                response = requests.get(url_fallback, timeout=5)
+                response.raise_for_status()
+                data = response.json()
+                if 'rates' not in data or 'KZT' not in data['rates']:
+                    raise KeyError("Required fields not found in fallback API response")
+                return float(data['rates']['KZT'])
+            except (requests.exceptions.RequestException, KeyError, ValueError) as fallback_e:
+                logger.error(f"Fallback API error: {fallback_e}")
+                return None
+        return None
 
 def get_usdt_kzt_rate():
     """Получает курс USDT к KZT"""
@@ -87,11 +75,11 @@ def get_all_rates():
     return rates
 
 def get_reply_keyboard():
-    """Создаёт ReplyKeyboardMarkup с кнопками для всех криптовалют и конвертацией"""
+    """Создаёт ReplyKeyboardMarkup с кнопками для всех криптовалют"""
     keyboard = [
         [KeyboardButton("USDT/KZT"), KeyboardButton("BTC/KZT")],
         [KeyboardButton("ETH/KZT"), KeyboardButton("TON/KZT")],
-        [KeyboardButton("Все курсы"), KeyboardButton("Конвертировать USDT")]
+        [KeyboardButton("Все курсы")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -114,55 +102,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     except Exception as e:
         logger.error(f"Error in start command: {e}")
-
-async def convert_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запускает процесс конвертации, запрашивает сумму"""
-    await update.message.reply_text(
-        "Введите количество USDT для конвертации (например, 100):",
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Отмена")]], resize_keyboard=True)
-    )
-    return CONVERT_AMOUNT
-
-async def convert_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает введённую сумму и возвращает результат конвертации"""
-    user_input = update.message.text
-    if user_input == "Отмена":
-        await update.message.reply_text(
-            "Конвертация отменена.",
-            reply_markup=get_reply_keyboard()
-        )
-        return ConversationHandler.END
-
-    try:
-        amount = float(user_input)
-        if amount <= 0:
-            raise ValueError("Сумма должна быть положительной")
-        
-        rate = get_crypto_rate('USDT')
-        if rate:
-            converted_amount = amount * rate
-            response = f"{amount} USDT = {converted_amount:.2f} KZT (по курсу 1 USDT = {rate:.2f} KZT)"
-            logger.info(f"Converted {amount} USDT to {converted_amount:.2f} KZT")
-        else:
-            response = "Не удалось получить курс USDT для конверсии. Попробуйте позже."
-            logger.warning("Failed to fetch USDT rate for conversion")
-        
-        await update.message.reply_text(response, reply_markup=get_reply_keyboard())
-        return ConversationHandler.END
-    except ValueError as e:
-        await update.message.reply_text(
-            f"Неверный формат суммы. Введите число (например, 100). Ошибка: {e}",
-            reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Отмена")]], resize_keyboard=True)
-        )
-        return CONVERT_AMOUNT
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет процесс конвертации"""
-    await update.message.reply_text(
-        "Конвертация отменена.",
-        reply_markup=get_reply_keyboard()
-    )
-    return ConversationHandler.END
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик всех сообщений"""
@@ -201,12 +140,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 response = "Не удалось получить курсы. Попробуйте позже."
                 logger.warning("Failed to fetch all rates")
                 
-        elif message_text == "Конвертировать USDT":
-            return  # Передаём управление ConversationHandler
-        
         else:
             # Для любого другого сообщения показываем клавиатуру
-            response = "Выберите криптовалюту для получения курса или нажмите 'Конвертировать USDT':"
+            response = "Выберите криптовалюту для получения курса:"
             logger.info("ReplyKeyboard sent successfully")
         
         await update.message.reply_text(response, reply_markup=get_reply_keyboard())
@@ -226,19 +162,9 @@ def main():
         # Добавляем обработчик ошибок
         application.add_error_handler(error_handler)
         
-        # Настраиваем ConversationHandler для конвертации
-        conv_handler = ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex("^(Конвертировать USDT)$"), convert_start)],
-            states={
-                CONVERT_AMOUNT: [MessageHandlerConv(filters.TEXT & ~filters.COMMAND, convert_amount)]
-            },
-            fallbacks=[MessageHandler(filters.Regex("^(Отмена)$"), cancel)]
-        )
-        
         # Добавляем основные обработчики
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_handler(conv_handler)
         
         logger.info("Bot starting with polling...")
         
