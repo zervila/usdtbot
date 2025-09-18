@@ -1,8 +1,11 @@
 import logging
 import os
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import requests
+from flask import Flask, request
+
+app = Flask(__name__)
 
 # Состояния для ConversationHandler
 CONVERT_AMOUNT = range(1)
@@ -21,8 +24,9 @@ if not BOT_TOKEN:
     logger.error("BOT_TOKEN not set in Secrets")
     raise ValueError("BOT_TOKEN not set")
 
+application = Application.builder().token(BOT_TOKEN).build()
+
 def get_crypto_rate(crypto_symbol):
-    """Получает курс криптовалюты к KZT через CoinGecko API"""
     try:
         crypto_ids = {'USDT': 'tether', 'BTC': 'bitcoin', 'ETH': 'ethereum', 'TON': 'the-open-network'}
         if crypto_symbol not in crypto_ids:
@@ -61,11 +65,9 @@ def get_crypto_rate(crypto_symbol):
             return None
 
 def get_usdt_kzt_rate():
-    """Получает курс USDT к KZT"""
     return get_crypto_rate('USDT')
 
 def get_all_rates():
-    """Получает курсы всех криптовалют к KZT"""
     rates = {}
     for crypto in ['USDT', 'BTC', 'ETH', 'TON']:
         rate = get_crypto_rate(crypto)
@@ -74,7 +76,6 @@ def get_all_rates():
     return rates
 
 def get_reply_keyboard():
-    """Создаёт ReplyKeyboardMarkup с кнопками для всех криптовалют и конвертацией"""
     keyboard = [
         [KeyboardButton("USDT/KZT"), KeyboardButton("BTC/KZT")],
         [KeyboardButton("ETH/KZT"), KeyboardButton("TON/KZT")],
@@ -181,20 +182,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Update {update} caused error {context.error}")
 
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+async def webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    await application.process_update(update)
+    return 'OK', 200
+
 def main():
     try:
-        application = Application.builder().token(BOT_TOKEN).build()
-        application.add_error_handler(error_handler)
-        conv_handler = ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex("^(Конвертировать USDT)$"), convert_start)],
-            states={CONVERT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, convert_amount)]},
-            fallbacks=[MessageHandler(filters.Regex("^(Отмена)$"), cancel)]
-        )
         application.add_handler(CommandHandler("start", start_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(conv_handler)
-        logger.info("Bot starting with polling...")
-        application.run_polling(drop_pending_updates=True)
+        application.add_error_handler(error_handler)
+        logger.info("Bot starting with webhook...")
+        app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
     except Exception as e:
         logger.error(f"Bot failed to start: {e}")
 
