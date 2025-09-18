@@ -1,8 +1,7 @@
 import logging
 import os
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler, \
-    MessageHandler as MessageHandlerConv
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 import requests
 
 # Состояния для ConversationHandler
@@ -188,7 +187,7 @@ def main():
         application.add_error_handler(error_handler)
         conv_handler = ConversationHandler(
             entry_points=[MessageHandler(filters.Regex("^(Конвертировать USDT)$"), convert_start)],
-            states={CONVERT_AMOUNT: [MessageHandlerConv(filters.TEXT & ~filters.COMMAND, convert_amount)]},
+            states={CONVERT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, convert_amount)]},
             fallbacks=[MessageHandler(filters.Regex("^(Отмена)$"), cancel)]
         )
         application.add_handler(CommandHandler("start", start_command))
